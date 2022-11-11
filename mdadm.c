@@ -125,51 +125,30 @@ int mdadm_read(uint32_t addr, uint32_t len, uint8_t *buf) {
     err = jbod_operation(newop(blockid,0, JBOD_SEEK_TO_BLOCK), NULL);   //seek to current block
     assert (err == JBOD_NO_ERROR);                                      //check for any error
 
-    err = jbod_operation(newop(0,0,JBOD_READ_BLOCK), tempbuf);          //read current block
-    assert (err == JBOD_NO_ERROR);                                      //check for any error
+    if (cache_lookup(diskid,blockid,tempbuf) == -1) {                   //check if item exists in cache
+      err = jbod_operation(newop(0,0,JBOD_READ_BLOCK), tempbuf);        //if not read current block
+      assert (err == JBOD_NO_ERROR);                                    //check for any error
+      cache_insert(diskid,blockid,tempbuf);                             //insert into cache if does not exist
+    }                                                                   //if cache already exists, cache_lookup copies required item is into tempbuf, skipping JBOD
     
     if(offset != 0){                                                    //check if there is any extra bytes at the beginnig of the block
       blockvalue++;                                                     //read through one block
       if (((blockvalue*256) - offset) > len) {                          //test to see if read_len is within one block
         blank = ((blockvalue*256) - original_off) - len;                //find extra value at the end of read_len
-	if (cache_lookup(diskid, blockid, tempbuf) == -1) {
-	  cache_insert(diskid,blockid,tempbuf);
-	  memcpy(buf+i, tempbuf+offset, JBOD_BLOCK_SIZE-offset-blank);    //copy memory from tempbuf to read_buf at size of blocksize-offset-blank
-	} else {
-	  cache_lookup(diskid,blockid,tempbuf);
-	  memcpy(buf+i, tempbuf+offset, JBOD_BLOCK_SIZE-offset-blank);    //copy memory from tempbuf to read_buf at size of blocksize-offset-blank
-	}
+	memcpy(buf+i, tempbuf+offset, JBOD_BLOCK_SIZE-offset-blank);    //copy memory from tempbuf to read_buf at size of blocksize-offset-blank
 	read_bytes = 256-offset-blank;                                  //keep track of bytes read
       }else {                                                           //else when read_len is not within the firt block
-	if (cache_lookup(diskid, blockid, tempbuf) == -1) {
-	  cache_insert(diskid,blockid,tempbuf);
-	  memcpy(buf+i, tempbuf+offset, JBOD_BLOCK_SIZE-offset);          //copy memory from tempbuf to readbuf at size of blocksize-offset
-	} else {
-	  cache_lookup(diskid,blockid,tempbuf);
-	  memcpy(buf+i, tempbuf+offset, JBOD_BLOCK_SIZE-offset);          //copy memory from tempbuf to readbuf at size of blocksize-offset
-	}
+	memcpy(buf+i, tempbuf+offset, JBOD_BLOCK_SIZE-offset);          //copy memory from tempbuf to readbuf at size of blocksize-offset
 	read_bytes = 256-offset;                                        //keep track of bytes read
       }
     }else {
       blockvalue++;                                                     //read through one block
       if((blockvalue*256)-original_off <= len) {                        //check if reading full block
-	if (cache_lookup(diskid, blockid, tempbuf) == -1) {
-	  cache_insert(diskid,blockid,tempbuf);
-	  memcpy(buf + i, tempbuf, JBOD_BLOCK_SIZE);                      //copy memory from tempbuf to readbuf at the size of blocksize
-	} else {
-	  cache_lookup(diskid,blockid,tempbuf);
-	  memcpy(buf + i, tempbuf, JBOD_BLOCK_SIZE);                      //copy memory from tempbuf to readbuf at the size of blocksize
-	} 
+	memcpy(buf + i, tempbuf, JBOD_BLOCK_SIZE);                      //copy memory from tempbuf to readbuf at the size of blocksize
 	read_bytes = JBOD_BLOCK_SIZE;                                   //keep track of bytes read
       } else if((blockvalue*256)-original_off > len){                   //check if reading partial block
 	blank = ((blockvalue*256)-original_off)-len;                    //find the value of bytes does not need to read at the end of the block
-	if (cache_lookup(diskid, blockid, tempbuf) == -1) {
-	  cache_insert(diskid, blockid, tempbuf);
-	  memcpy(buf + i, tempbuf, JBOD_BLOCK_SIZE-blank);                //copy memory from tempbuf to readbuf at size of blocksize-blank
-	} else {
-	  cache_lookup(diskid, blockid, tempbuf);
-	  memcpy(buf + i, tempbuf, JBOD_BLOCK_SIZE-blank);                //copy memory from tempbuf to readbuf at size of blocksize-blank
-	}
+	memcpy(buf + i, tempbuf, JBOD_BLOCK_SIZE-blank);                //copy memory from tempbuf to readbuf at size of blocksize-blank
 	read_bytes = 256-blank;                                         //keep track of bytes read
       }	  
     }
@@ -178,7 +157,6 @@ int mdadm_read(uint32_t addr, uint32_t len, uint8_t *buf) {
     diskid = current_addr/JBOD_DISK_SIZE;                               //update disk location
     blockid = (current_addr%JBOD_DISK_SIZE)/ JBOD_BLOCK_SIZE;           //update block location
   }
-  cache_print_hit_rate();
   return len;
 }
 
@@ -226,51 +204,34 @@ int mdadm_write(uint32_t addr, uint32_t len, const uint8_t *buf) {
     err = jbod_operation(newop(blockid,0, JBOD_SEEK_TO_BLOCK), NULL);   //seek to the current block
     assert (err == JBOD_NO_ERROR);
 
-    err = jbod_operation(newop(0,0,JBOD_READ_BLOCK), tempbuf);          //read the current block into the tempbuf
-    assert (err == JBOD_NO_ERROR);
+    if (cache_lookup(diskid,blockid,tempbuf) == -1) {                   //determine if cache exists
+      cache_insert(diskid,blockid,buf);                                 //if cache does not exist, insert cache
+      err = jbod_operation(newop(0,0,JBOD_READ_BLOCK), tempbuf);        //read the current block into the tempbuf
+      assert (err == JBOD_NO_ERROR);                                    //check for any error
+    } else {
+      cache_update(diskid,blockid,buf);                                 //if cache exist, update cache
+      err = jbod_operation(newop(0,0,JBOD_READ_BLOCK), tempbuf);        //read the current block into the tempbuf
+      assert (err == JBOD_NO_ERROR);                                    //check for any error
+    }
     
     if(offset != 0){                                                    //check of offset
       blockvalue++;                                                     //read through one block
       if (((blockvalue*256) - offset) > len) {                          //check for if write_len is within one block
         blank = ((blockvalue*256) - original_off) - len;                //find extra value at the end of write_len
-	if (cache_insert(diskid, blockid, buf) == -1) {
-	  cache_update(diskid,blockid,buf);
-	  memcpy(tempbuf+offset, buf, JBOD_BLOCK_SIZE-offset-blank);      //copy memory from write_buff into tempbuf with the size of blocksize-offset-blank
-	} else {
-	  cache_insert(diskid,blockid,buf);
-	  memcpy(tempbuf+offset, buf, JBOD_BLOCK_SIZE-offset-blank);      //copy memory from write_buff into tempbuf with the size of blocksize-offset-blank
-	}   
+	memcpy(tempbuf+offset, buf, JBOD_BLOCK_SIZE-offset-blank);      //copy memory from write_buff into tempbuf with the size of blocksize-offset-blank
 	read_bytes = 256-offset-blank;                                  //keep track of bytes read
       }else {                                                           //else when read_len is not within the first block
-	if (cache_insert(diskid, blockid, buf) == -1) {
-	  cache_update(diskid,blockid,buf);
-	  memcpy(tempbuf+offset, buf, JBOD_BLOCK_SIZE-offset);            //copy memory from write_buff into tempbuf with the size of blocksize-offset
-	} else {
-	  cache_insert(diskid,blockid,buf);
-	  memcpy(tempbuf+offset, buf, JBOD_BLOCK_SIZE-offset);            //copy memory from write_buff into tempbuf with the size of blocksize-offset
-	}
+	memcpy(tempbuf+offset, buf, JBOD_BLOCK_SIZE-offset);            //copy memory from write_buff into tempbuf with the size of blocksize-offset
 	read_bytes = 256-offset;                                        //keep track of bytes read
       }
     } else {
       blockvalue++;                                                     //read through one block
       if((blockvalue*256)-original_off <= len) {                        //check if reading full block
-	if (cache_insert(diskid, blockid, buf) == -1) {
-	  cache_update(diskid,blockid,buf);
-	  memcpy(tempbuf, buf+i, JBOD_BLOCK_SIZE);                        //copy memory from write_buff into tempbuf with the size of blocksize
-	} else {
-	  cache_insert(diskid,blockid,buf);
-	  memcpy(tempbuf, buf+i, JBOD_BLOCK_SIZE);                        //copy memory from write_buff into tempbuf with the size of blocksize
-	}
+	memcpy(tempbuf, buf+i, JBOD_BLOCK_SIZE);                        //copy memory from write_buff into tempbuf with the size of blocksize
 	read_bytes = JBOD_BLOCK_SIZE;                                   //keep track of bytes read
       }else if ((blockvalue*256) -original_off > len) {                 //check if reading partial block
 	blank = ((blockvalue*256) - original_off) - len;                //find extra value at the end of write_len
-	if (cache_insert(diskid, blockid, buf) == -1) {
-	  cache_update(diskid,blockid,buf);
-	  memcpy(tempbuf, buf+i, JBOD_BLOCK_SIZE-blank);                  //copy memory from write_buff into tempbuf with the size of blocksize-blank
-	} else {
-	  cache_insert(diskid,blockid,buf);
-	  memcpy(tempbuf, buf+i, JBOD_BLOCK_SIZE-blank);                  //copy memory from write_buff into tempbuf with the size of blocksize-blank
-	}
+	memcpy(tempbuf, buf+i, JBOD_BLOCK_SIZE-blank);                  //copy memory from write_buff into tempbuf with the size of blocksize-blank
 	read_bytes = 256-blank;                                         //keep track of bytes read
       }
     }
